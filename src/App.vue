@@ -1,5 +1,6 @@
 <template>
   <find-place v-if='!placeFound' @loaded='onGridLoaded'></find-place>
+  <div v-if='placeFound && frameRect' class='frame' :style='frameStyle'></div>
   <div id="app">
     <div v-if='placeFound'>
       <div class='controls'>
@@ -17,6 +18,23 @@
             </div>
           </div>
         </div>
+
+        <h3>Frame</h3>
+        <div class='row'>
+          <div class='col'>Aspect ratio</div>
+          <div class='col c-2'>
+            <select v-model='frame'>
+              <option v-for='preset in framePresets' :key='preset.value' :value='preset.value'>{{preset.label}}</option>
+            </select>
+          </div>
+        </div>
+        <div class='row' v-if='frameRect'>
+          <a href='#' @click.prevent='fillFrame' class='col'>{{filling ? 'Filling...' : 'Fill frame'}}</a>
+          <span class='col c-2'>
+            Download roads inside the frame that are outside of the city bounds.
+          </span>
+        </div>
+        <div class='row error' v-if='fillError'>{{fillError}}</div>
 
         <h3>Export</h3>
         <div class='row'>
@@ -81,6 +99,9 @@ import EditableLabel from './components/EditableLabel.vue';
 import ColorPicker from './components/ColorPicker.vue';
 import createScene from './lib/createScene.js';
 import GridLayer from './lib/GridLayer.js';
+import Query from './lib/Query.js';
+import LoadOptions from './lib/LoadOptions.js';
+import {FRAME_PRESETS, setFrame, getFrameRect, getFrameBBox} from './lib/frame.js';
 import generateZazzleLink from './lib/getZazzleLink.js';
 import appState from './lib/appState.js';
 import {getPrintableCanvas, getCanvas} from './lib/saveFile.js';
@@ -116,19 +137,47 @@ export default {
       settingsOpen: false,
       labelColor: config.getLabelColor().toRgb(),
       backgroundColor: config.getBackgroundColor().toRgb(),
-      layers: []
+      layers: [],
+      framePresets: FRAME_PRESETS,
+      frame: String(appState.get('frame') || ''),
+      frameRect: null,
+      filling: false,
+      fillError: null
     }
   },
   computed: {
     labelColorRGBA() {
       return toRGBA(this.labelColor);
+    },
+    frameStyle() {
+      let {left, top, width, height} = this.frameRect;
+      // Huge shadow grays out everything outside of the frame
+      let shade = toRGBA({...this.backgroundColor, a: 0.7});
+      let linesLayer = this.layers.find(layer => layer.name === 'lines');
+      let lineColor = tinycolor(linesLayer ? linesLayer.color : config.getDefaultLineColor()).toRgb();
+      let border = toRGBA({...lineColor, a: lineColor.a * 0.5});
+      return {
+        left: left + 'px',
+        top: top + 'px',
+        width: width + 'px',
+        height: height + 'px',
+        boxShadow: `0 0 0 100vmax ${shade}`,
+        outline: `1px solid ${border}`
+      };
+    }
+  },
+  watch: {
+    frame() {
+      this.applyFrame();
     }
   },
   created() {
     bus.on('scene-transform', this.handleSceneTransform);
     bus.on('background-color', this.syncBackground);
     bus.on('line-color', this.syncLineColor);
+    window.addEventListener('resize', this.updateFrameRect);
     this.overlayManager = createOverlayManager();
+    this.applyFrame();
   },
   beforeUnmount() {
     debugger;
@@ -137,6 +186,7 @@ export default {
     bus.off('scene-transform', this.handleSceneTransform);
     bus.off('background-color', this.syncBackground);
     bus.off('line-color', this.syncLineColor);
+    window.removeEventListener('resize', this.updateFrameRect);
   },
   methods: {
     dispose() {
@@ -188,11 +238,59 @@ export default {
       this.placeFound = false;
       this.zazzleLink = null;
       this.showSettings = false;
+      this.fillError = null;
       this.backgroundColor = config.getBackgroundColor().toRgb();
       this.labelColor = config.getLabelColor().toRgb();
 
       document.body.style.backgroundColor = config.getBackgroundColor().toRgbString();
       getCanvas().style.visibility = 'hidden';
+    },
+
+    applyFrame() {
+      setFrame(this.frame);
+      if (this.frame) appState.set('frame', this.frame);
+      else appState.unset('frame');
+      this.updateFrameRect();
+      this.zazzleLink = null;
+    },
+
+    updateFrameRect() {
+      this.frameRect = getFrameRect();
+      // Labels are anchored to the bottom right corner of the frame (see styles)
+      let style = document.documentElement.style;
+      if (this.frameRect) {
+        let {left, top, width, height} = this.frameRect;
+        style.setProperty('--frame-right', (window.innerWidth - left - width) + 'px');
+        style.setProperty('--frame-bottom', (window.innerHeight - top - height) + 'px');
+      } else {
+        style.removeProperty('--frame-right');
+        style.removeProperty('--frame-bottom');
+      }
+    },
+
+    fillFrame() {
+      if (this.filling) return;
+
+      let scene = this.scene;
+      let layer = scene.queryLayer('lines');
+      let grid = layer.grid;
+      let bbox = getFrameBBox(scene.getRenderer(), grid.projector);
+      this.filling = true;
+      this.fillError = null;
+      Query.runFromOptions(new LoadOptions({wayFilter: Query.Road, bbox}))
+        .then(filledGrid => {
+          if (scene !== this.scene) return; // They moved on to another city
+          grid.addElements(filledGrid.elements);
+          layer.setGrid(grid);
+          this.zazzleLink = null;
+        })
+        .catch(err => {
+          console.error(err);
+          this.fillError = 'Could not fill the frame: ' + (err.message || err);
+        })
+        .finally(() => {
+          this.filling = false;
+        });
     },
 
     toPNGFile(e) {
@@ -445,10 +543,14 @@ a:focus {
   }
 }
 
+.frame {
+  position: fixed;
+  pointer-events: none;
+}
 .city-name {
   position: absolute;
-  right: 32px;
-  bottom: 54px;
+  right: calc(var(--frame-right, 0px) + 32px);
+  bottom: calc(var(--frame-bottom, 0px) + 54px);
   font-size: 24px;
   color: #434343;
   input {
@@ -460,8 +562,8 @@ a:focus {
   text-align: right;
   position: fixed;
   font-family: labels-font;
-  right: 32px;
-  bottom: 32px;
+  right: calc(var(--frame-right, 0px) + 32px);
+  bottom: calc(var(--frame-bottom, 0px) + 32px);
   font-size: 12px;
   padding-right: 8px;
   a {
@@ -493,12 +595,12 @@ a:focus {
 
   }
   .city-name  {
-    right: 8px;
-    bottom: 24px;
+    right: calc(var(--frame-right, 0px) + 8px);
+    bottom: calc(var(--frame-bottom, 0px) + 24px);
   }
   .license  {
-    right: 8px;
-    bottom: 8px;
+    right: calc(var(--frame-right, 0px) + 8px);
+    bottom: calc(var(--frame-bottom, 0px) + 8px);
   }
 }
 

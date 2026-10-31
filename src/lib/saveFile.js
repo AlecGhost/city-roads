@@ -1,5 +1,6 @@
 // import protobufExport from './protobufExport.js';
 import svgExport from './svgExport.js';
+import {getFrameRect} from './frame.js';
 
 export function toSVG(scene, options) {
   options = options || {};
@@ -40,15 +41,17 @@ export function toPNG(scene, options) {
 
 export function getPrintableCanvas(scene) {
   let cityCanvas = getCanvas();
-  let width = cityCanvas.width;
-  let height = cityCanvas.height;
+  let crop = getFrameRect(window.devicePixelRatio || 1) ||
+    {left: 0, top: 0, width: cityCanvas.width, height: cityCanvas.height};
 
   let printable = document.createElement('canvas');
   let ctx = printable.getContext('2d');
-  printable.width = width;
-  printable.height = height;
+  printable.width = crop.width;
+  printable.height = crop.height;
   scene.render();
-  ctx.drawImage(cityCanvas, 0, 0, cityCanvas.width, cityCanvas.height, 0, 0, width, height);
+  ctx.drawImage(cityCanvas, crop.left, crop.top, crop.width, crop.height, 0, 0, crop.width, crop.height);
+  // Labels are positioned in window coordinates:
+  ctx.translate(-crop.left, -crop.top);
 
   return Promise.all(collectPrintable().map(label => drawTextLabel(label, ctx))).then(() => {
     return printable;
