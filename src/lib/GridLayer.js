@@ -60,6 +60,12 @@ export default class GridLayer {
   }
 
   setGrid(grid) {
+    if (this.lines) {
+      // Rebuild lines for the new grid. The color could have been changed directly on the lines
+      this._color = tinycolor.fromRatio(this.lines.color);
+      if (this.scene && !this.hidden) this.scene.removeChild(this.lines);
+      this.lines = null;
+    }
     this.grid = grid;
     if (this.scene) {
       this.bindToScene(this.scene);

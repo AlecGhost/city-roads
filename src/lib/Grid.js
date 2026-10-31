@@ -80,6 +80,29 @@ export default class Grid {
     return gridInstance;
   }
 
+  /**
+   * Adds OSM elements that are not yet part of this grid. The projector is kept,
+   * so already rendered coordinates remain valid.
+   */
+  addElements(elementsOfOSMResponse) {
+    let wayIds = new Set();
+    this.elements.forEach(element => {
+      if (element.type === 'way') wayIds.add(element.id);
+    });
+
+    elementsOfOSMResponse.forEach(element => {
+      if (element.type === 'node') {
+        if (this.nodes.has(element.id)) return;
+        this.nodes.set(element.id, element);
+        this.bounds.addPoint(element.lon, element.lat);
+      } else if (element.type === 'way') {
+        if (wayIds.has(element.id)) return;
+        this.wayPointCount += element.nodes.length;
+      }
+      this.elements.push(element);
+    });
+  }
+
   getProjectedRect() {
     let bounds = this.bounds;
     let project = this.getProjector();

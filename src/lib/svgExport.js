@@ -1,4 +1,5 @@
 import {toSVG} from 'w-gl';
+import {getFrameRect} from './frame.js';
 
 export default function svgExport(scene, options) {
   const renderer = scene.getRenderer();
@@ -13,21 +14,19 @@ Data © OpenStreetMap contributors, ODbL 1.0. https://osm.org/copyright
     }
   };
 
-  if (options.minLength) {
-    svgExportSettings.beforeWrite = path => {
-      let pathLength = 0;
-      for (let i = 1; i < path.length; ++i) {
-        pathLength += Math.hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y);
-        if (pathLength > options.minLength) return true;
-      }
-      return pathLength > options.minLength;
-    }
+  const frame = getFrameRect(renderer.getPixelRatio());
+  if (options.minLength || frame) {
+    svgExportSettings.beforeWrite = path =>
+      (!options.minLength || isLongerThan(path, options.minLength)) &&
+      (!frame || overlaps(path, frame));
   }
   svgExportSettings.round = options.round;
 
   const svg = toSVG(renderer, svgExportSettings);
+  if (!frame) return svg;
 
-  return svg;
+  // Crop to the frame. Paths crossing its edges are hidden by the viewBox.
+  return svg.replace(/viewBox="[^"]*"/, `viewBox="${frame.left} ${frame.top} ${frame.width} ${frame.height}"`);
 
   function getPrintableElements() {
     let dpr = renderer.getPixelRatio();
@@ -67,4 +66,26 @@ Data © OpenStreetMap contributors, ODbL 1.0. https://osm.org/copyright
       }
     }).filter(x => x).join('\n')
   }
+}
+
+function isLongerThan(path, minLength) {
+  let pathLength = 0;
+  for (let i = 1; i < path.length; ++i) {
+    pathLength += Math.hypot(path[i].x - path[i - 1].x, path[i].y - path[i - 1].y);
+    if (pathLength > minLength) return true;
+  }
+  return pathLength > minLength;
+}
+
+function overlaps(path, rect) {
+  // Compares bounding boxes, so that segments crossing the frame without a point inside are kept
+  let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity;
+  path.forEach(point => {
+    left = Math.min(left, point.x);
+    right = Math.max(right, point.x);
+    top = Math.min(top, point.y);
+    bottom = Math.max(bottom, point.y);
+  });
+  return right >= rect.left && left <= rect.left + rect.width &&
+    bottom >= rect.top && top <= rect.top + rect.height;
 }
